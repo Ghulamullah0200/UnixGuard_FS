@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="UnixGuard FS & VM — Web-Based Unix File System and Virtual Memory Simulator for OS Theory">
+    <title>UnixGuard FS &amp; VM — Unix OS Simulator</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<!-- Mobile Top Header -->
+<header class="mobile-header">
+    <button class="menu-toggle" id="menu-toggle" onclick="toggleMobileMenu()">[Menu]</button>
+    <span class="mobile-title">UnixGuard OS Sim</span>
+</header>
+
+<div class="app-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-logo">
+                <span class="logo-icon">&#9670;</span>
+                <span>UnixGuard FS &amp; VM</span>
+            </div>
+            <button class="sidebar-close" id="sidebar-close" onclick="toggleMobileMenu()">&times;</button>
+            <div class="sidebar-tagline">Unix File System &amp; Virtual Memory Simulator</div>
+        </div>
+        <nav class="sidebar-nav">
+            <div class="nav-item active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</div>
+            <div class="nav-item" data-tab="explorer" onclick="switchTab('explorer')">File Explorer</div>
+            <div class="nav-item" data-tab="diskmap" onclick="switchTab('diskmap')">Disk Block Map</div>
+            <div class="nav-item" data-tab="terminal" onclick="switchTab('terminal')">Terminal Shell</div>
+            <div class="nav-item" data-tab="scheduler" onclick="switchTab('scheduler')">CPU Scheduler</div>
+            <div class="nav-item" data-tab="vm" onclick="switchTab('vm')">Virtual Memory</div>
+        </nav>
+        <div class="sidebar-footer">
+            OS Theory Lab Project<br>v2.0 · Core System Sim
+        </div>
+    </aside>
+
+    <!-- Sidebar Overlay for Mobile -->
+    <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleMobileMenu()"></div>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- ═══ DASHBOARD ═══ -->
+        <div class="tab-panel active" id="panel-dashboard">
+            <div class="section-header">
+                <h2>System Dashboard</h2>
+                <p>Status summary of the block-allocated Unix virtual file system and memory subsystems</p>
+            </div>
+            
+            <div class="stats-grid" id="stats-grid">
+                <!-- Dynamically filled by JS -->
+            </div>
+
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Directory Hierarchy Tree</span>
+                    </div>
+                    <div class="tree-container" id="dashboard-tree">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Disk Space Allocation Preview</span>
+                    </div>
+                    <div class="disk-preview-container">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-fill" id="disk-bar" style="width: 0%"></div>
+                        </div>
+                        <div class="disk-bar-labels">
+                            <span id="disk-used-label">0 KB Used</span>
+                            <span id="disk-free-label">128 KB Free</span>
+                        </div>
+                        <div class="quick-block-summary" id="quick-block-summary">
+                            <!-- Filled by JS -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ FILE EXPLORER ═══ -->
+        <div class="tab-panel" id="panel-explorer">
+            <div class="section-header">
+                <h2>Visual File Explorer</h2>
+                <p>Browse directories, read/edit files, and examine physical disk block allocations</p>
+            </div>
+            <div class="grid-sidebar">
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">File System Tree</span>
+                    </div>
+                    <div class="tree-container" id="explorer-tree"></div>
+                </div>
+                
+                <div class="explorer-details-column">
+                    <div class="card" id="node-detail-card">
+                        <div class="card-header">
+                            <span class="card-title">Node Details &amp; Operations</span>
+                        </div>
+                        <div id="node-detail">
+                            <div class="empty-state">
+                                <div class="icon-placeholder">[DIR]</div>
+                                <p>Select a node from the tree to view its properties and data blocks</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Create New Node</span>
+                        </div>
+                        <div class="create-form">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label class="form-label" for="create-name">Name</label>
+                                    <input type="text" id="create-name" placeholder="e.g., test.txt" class="form-input">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="create-type">Type</label>
+                                    <select id="create-type" class="form-select" onchange="toggleCreateFields()">
+                                        <option value="file">File (Regular)</option>
+                                        <option value="directory">Directory</option>
+                                        <option value="symlink">Symbolic Link</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-group" id="group-content">
+                                <label class="form-label" for="create-content">File Contents (Allocates disk blocks)</label>
+                                <textarea id="create-content" placeholder="Enter file data..." class="form-textarea" rows="3"></textarea>
+                            </div>
+                            <div class="form-group d-none" id="group-target">
+                                <label class="form-label" for="create-target">Symlink Target Path</label>
+                                <input type="text" id="create-target" placeholder="e.g., /home/admin/notes.txt" class="form-input">
+                            </div>
+                            <button class="btn btn-primary" onclick="createNewNode()">Create Node</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ DISK BLOCK MAP ═══ -->
+        <div class="tab-panel" id="panel-diskmap">
+            <div class="section-header">
+                <h2>Physical Disk Block Map</h2>
+                <p>Visual representation of the 256 physical blocks (512B each). Block 0 is the Superblock, 1-32 is Inode Table, and 33-255 are Data blocks.</p>
+            </div>
+            
+            <div class="diskmap-layout">
+                <div class="card block-grid-card">
+                    <div class="card-header">
+                        <span class="card-title">Virtual Disk Blocks (16x16 Grid)</span>
+                        <div class="disk-legend">
+                            <span class="legend-item"><span class="legend-color block-type-superblock"></span> Superblock</span>
+                            <span class="legend-item"><span class="legend-color block-type-inode_table"></span> Inode Table</span>
+                            <span class="legend-item"><span class="legend-color block-type-allocated_data"></span> Allocated Data</span>
+                            <span class="legend-item"><span class="legend-color block-type-free"></span> Free</span>
+                        </div>
+                    </div>
+                    <div class="block-grid" id="disk-block-grid">
+                        <!-- 256 block elements rendered by JS -->
+                    </div>
+                </div>
+
+                <div class="card block-info-card">
+                    <div class="card-header">
+                        <span class="card-title">Block Inspector</span>
+                    </div>
+                    <div id="block-inspector-content">
+                        <div class="empty-state">
+                            <div class="icon-placeholder">[DISK]</div>
+                            <p>Hover over or click any block in the grid to view allocation details</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ TERMINAL ═══ -->
+        <div class="tab-panel" id="panel-terminal">
+            <div class="section-header">
+                <h2>Terminal Simulator</h2>
+                <p>Execute standard block-allocated Unix commands inside a virtual interactive shell</p>
+            </div>
+            <div class="card" style="padding:0">
+                <div class="terminal">
+                    <div class="terminal-header">
+                        <div class="terminal-dot red"></div>
+                        <div class="terminal-dot yellow"></div>
+                        <div class="terminal-dot green"></div>
+                        <span class="terminal-title">unixguard — bash (virtual shell)</span>
+                    </div>
+                    <div class="terminal-output" id="terminal-output">
+                        <div class="info">Welcome to the Block-Allocated Unix File System Terminal Simulator!</div>
+                        <div class="info">All files grow/shrink and utilize physical disk blocks. Type 'help' or 'df' for details.</div>
+                        <div>&nbsp;</div>
+                    </div>
+                    <div class="terminal-input-line">
+                        <span class="terminal-prompt" id="terminal-prompt">root@unix-vfs:/$</span>
+                        <input type="text" class="terminal-input" id="terminal-input" placeholder="Type a command..." autofocus>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SCHEDULING ═══ -->
+        <div class="tab-panel" id="panel-scheduler">
+            <div class="section-header">
+                <h2>CPU Scheduling Simulation</h2>
+                <p>Simulate OS process scheduling algorithms (FCFS, Round Robin, Priority) and compare performance metrics</p>
+            </div>
+            
+            <div class="grid-sidebar">
+                <div class="card">
+                    <div class="card-header"><span class="card-title">Configure Algorithm</span></div>
+                    <div class="form-group">
+                        <label class="form-label">Algorithm</label>
+                        <select id="sched-alg" class="form-select" onchange="toggleQuantum()">
+                            <option value="fcfs">First-Come, First-Served (FCFS)</option>
+                            <option value="rr">Round Robin (RR)</option>
+                            <option value="priority">Priority Scheduling (Non-preemptive)</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="sched-quantum-group" style="display:none">
+                        <label class="form-label">Time Quantum</label>
+                        <input type="number" id="sched-quantum" value="2" min="1" max="10" class="form-input">
+                    </div>
+                    <button class="btn btn-primary" style="width:100%" onclick="runScheduler()">Run Simulation</button>
+                </div>
+
+                <div class="scheduler-results-column">
+                    <div id="scheduler-results-container">
+                        <!-- Filled by JS -->
+                        <div class="empty-state">
+                            <div class="icon-placeholder">[CPU]</div>
+                            <p>Choose an algorithm and run the simulation to see scheduling metrics and Gantt charts</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ VIRTUAL MEMORY ═══ -->
+        <div class="tab-panel" id="panel-vm">
+            <div class="section-header">
+                <h2>Demand-Paged Virtual Memory Manager</h2>
+                <p>Simulates virtual address spaces for Ring 3 user mode processes, page allocation, swap space, and page fault traps to Ring 0 (Kernel)</p>
+            </div>
+
+            <div class="vm-workspace">
+                <!-- VMM Panel: Processes & Access Actions -->
+                <div class="grid-2" style="margin-bottom: 20px;">
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">Process Management</span></div>
+                        <div class="form-row" style="margin-bottom:12px">
+                            <input type="text" id="vm-process-name" placeholder="Process name (e.g. Chrome)" class="form-input" style="flex:1">
+                            <button class="btn btn-primary" onclick="createVMProcess()">Create Process</button>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Select Active Process</label>
+                            <select id="vm-active-process" class="form-select" onchange="loadVMProcessDetails()">
+                                <option value="">-- No process active --</option>
+                            </select>
+                        </div>
+                        <div id="active-proc-ring-badge" style="margin-top: 10px;"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">Memory Access Simulator (Ring 3)</span></div>
+                        <div class="form-row" style="margin-bottom:12px">
+                            <div class="form-group" style="flex:1">
+                                <label class="form-label">Virtual Address (Hex: 0x0000 - 0xFFFF)</label>
+                                <input type="text" id="vm-address" placeholder="e.g. 0x1A2C" class="form-input">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Operation</label>
+                                <select id="vm-op" class="form-select" onchange="toggleVMContentField()">
+                                    <option value="read">Read Address</option>
+                                    <option value="write">Write Address</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group" id="vm-write-value-group" style="display:none">
+                            <label class="form-label">Content to Write (max 128 chars)</label>
+                            <input type="text" id="vm-write-value" placeholder="e.g., Variable data" class="form-input">
+                        </div>
+                        <button class="btn btn-primary" id="btn-vm-access" style="width:100%" onclick="simulateVMAccess()">Execute Memory Access</button>
+                    </div>
+                </div>
+
+                <!-- Page Fault Timeline Log & Tables -->
+                <div class="grid-sidebar" style="margin-bottom: 20px;">
+                    <!-- Timeline Log -->
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">Page Fault Handler Logs (Ring 0 / Ring 3)</span></div>
+                        <div class="vm-logs-container" id="vm-logs">
+                            <div class="empty-state">
+                                <div class="icon-placeholder">[LOG]</div>
+                                <p>Perform read/write operations to see memory mapping events and page fault traces</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Process Page Table -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Active Process Page Table (64KB Virtual Space)</span>
+                        </div>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Page #</th>
+                                        <th>Virtual Range</th>
+                                        <th>Frame #</th>
+                                        <th>Valid Bit</th>
+                                        <th>Dirty Bit</th>
+                                        <th>Ref Bit</th>
+                                        <th>Disk Swap Block</th>
+                                        <th>Page Contents</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="vm-page-table-rows">
+                                    <tr>
+                                        <td colspan="8" class="text-center" style="color:var(--text-muted)">Select an active process above to view its virtual page mappings</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Physical Memory RAM & Swap Space Grid -->
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Physical RAM Layout (32KB Shared RAM)</span>
+                            <span class="badge badge-success">8 Frames (4KB each)</span>
+                        </div>
+                        <div class="ram-grid-container" id="ram-grid">
+                            <!-- Filled dynamically by JS -->
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Virtual Disk Swap Space (Swapped out pages)</span>
+                            <span class="badge badge-pending">32 Swap Blocks (4KB each)</span>
+                        </div>
+                        <div class="swap-grid" id="swap-grid">
+                            <!-- 32 blocks filled by JS -->
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </main>
+</div>
+<div class="toast-container" id="toast-container"></div>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
