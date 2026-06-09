@@ -59,7 +59,7 @@ def delete_process(db: Session, pid: int) -> bool:
 
 def get_ram_layout(db: Session) -> List[dict]:
     """Retrieve the physical memory frame status (Frame 0 to 7)."""
-    frames = [{"frame_number": i, "pid": None, "process_name": None, "page_number": None, "content": None} for i in range(PHYSICAL_FRAMES)]
+    frames = [{"frame_number": i, "pid": None, "process_id": None, "process_name": None, "page_number": None, "content": None, "is_dirty": False} for i in range(PHYSICAL_FRAMES)]
 
     # Query all valid pages across all processes
     valid_pages = db.query(VirtualPage).filter(VirtualPage.is_valid == True).all()
@@ -69,16 +69,18 @@ def get_ram_layout(db: Session) -> List[dict]:
             frames[page.frame_number] = {
                 "frame_number": page.frame_number,
                 "pid": page.process_id,
+                "process_id": page.process_id,
                 "process_name": proc.name if proc else "Unknown",
                 "page_number": page.page_number,
-                "content": page.allocated_content or "[empty]"
+                "content": page.allocated_content or "[empty]",
+                "is_dirty": page.is_dirty,
             }
     return frames
 
 
 def get_swap_layout(db: Session) -> List[dict]:
     """Retrieve the swap space block status on disk."""
-    swap = [{"block_number": i, "pid": None, "process_name": None, "page_number": None} for i in range(SWAP_BLOCKS)]
+    swap = [{"block_number": i, "pid": None, "process_id": None, "process_name": None, "page_number": None} for i in range(SWAP_BLOCKS)]
 
     swapped_pages = db.query(VirtualPage).filter(VirtualPage.swap_block.isnot(None)).all()
     for page in swapped_pages:
@@ -87,8 +89,9 @@ def get_swap_layout(db: Session) -> List[dict]:
             swap[page.swap_block] = {
                 "block_number": page.swap_block,
                 "pid": page.process_id,
+                "process_id": page.process_id,
                 "process_name": proc.name if proc else "Unknown",
-                "page_number": page.page_number
+                "page_number": page.page_number,
             }
     return swap
 
