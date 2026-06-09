@@ -273,3 +273,89 @@ def access_memory(db: Session, pid: int, address: int, operation: str, data: Opt
         "logs": logs,
         "value": page.allocated_content
     }
+
+
+def get_process_memory_map(db: Session, pid: int) -> Optional[dict]:
+    """Get per-process memory map: which frames this process owns,
+    which pages are swapped, and the global occupancy state."""
+    proc = db.query(VirtualMemoryProcess).get(pid)
+    if not proc:
+        return None
+
+    # This process's pages
+    pages = db.query(VirtualPage).filter(
+        VirtualPage.process_id == pid
+    ).order_by(VirtualPage.page_number).all()
+
+    # Global frame occupancy (all processes)
+    all_valid_pages = db.query(VirtualPage).filter(VirtualPage.is_valid == True).all()
+
+    # Build 8-frame layout from this process's perspective
+    frames = []
+    for frame_idx in range(PHYSICAL_FRAMES):
+        frame_info = {
+            "frame_number": frame_idx,
+            "owner": None,
+            "pid": None,
+            "process_name": None,
+            "page_number": None,
+            "content": None,
+            "is_dirty": False,
+            "is_referenced": False,
+        }
+        occupant = next((vp for vp in all_valid_pages if vp.frame_number == frame_idx), None)
+        if occupant:
+            occ_proc = db.query(VirtualMemoryProcess).get(occupant.process_id)
+            frame_info["pid"] = occupant.process_id
+            frame_info["process_name"] = occ_proc.name if occ_proc else "Unknown"
+            frame_info["page_number"] = occupant.page_number
+            frame_info["content"] = occupant.allocated_content or "[empty]"
+            frame_info["is_dirty"] = occupant.is_dirty
+            frame_info["is_referenced"] = occupant.is_referenced
+            frame_info["owner"] = "self" if occupant.process_id == pid else "other"
+        frames.append(frame_info)
+
+    # This process's swapped pages
+    swap_entries = []
+    for p in pages:
+        if p.swap_block is not None:
+            swap_entries.append({
+                "swap_block": p.swap_block,
+                "page_number": p.page_number,
+                "content": p.allocated_content or "[swapped]",
+            })
+    swap_entries.sort(key=lambda s: s["swap_block"])
+
+    pages_in_ram = sum(1 for p in pages if p.is_valid)
+    pages_in_swap = sum(1 for p in pages if p.swap_block is not None)
+    pages_accessed = sum(1 for p in pages if p.allocated_content is not None)
+    dirty_count = sum(1 for p in pages if p.is_dirty)
+    total_used_frames = len({vp.frame_number for vp in all_valid_pages if vp.frame_number is not None})
+    all_swapped = db.query(VirtualPage).filter(VirtualPage.swap_block.isnot(None)).all()
+    total_used_swap = len({p.swap_block for p in all_swapped})
+
+    return {
+        "pid": proc.id,
+        "process_name": proc.name,
+        "state": proc.state,
+        "privilege_ring": proc.privilege_ring,
+        "summary": {
+            "total_pages": len(pages),
+            "pages_in_ram": pages_in_ram,
+            "pages_in_swap": pages_in_swap,
+            "pages_accessed": pages_accessed,
+            "dirty_pages": dirty_count,
+        },
+        "global_ram": {
+            "total_frames": PHYSICAL_FRAMES,
+            "used_frames": total_used_frames,
+            "free_frames": PHYSICAL_FRAMES - total_used_frames,
+        },
+        "global_swap": {
+            "total_blocks": SWAP_BLOCKS,
+            "used_blocks": total_used_swap,
+            "free_blocks": SWAP_BLOCKS - total_used_swap,
+        },
+        "frames": frames,
+        "swap_entries": swap_entries,
+    }

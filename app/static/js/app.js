@@ -581,6 +581,7 @@ async function loadVMProcessDetails() {
     if (!pid) {
         tableBody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted)">Select a process from the list</td></tr>';
         ringBadge.innerHTML = '';
+        loadPhysicalLayouts();
         return;
     }
 
@@ -589,7 +590,6 @@ async function loadVMProcessDetails() {
         const proc = procs.find(p => p.id == pid);
         if (!proc) return;
 
-        // Render Ring status
         const isKernel = proc.privilege_ring === 0;
         ringBadge.innerHTML = `
             <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -598,7 +598,6 @@ async function loadVMProcessDetails() {
             </div>
         `;
 
-        // Render Page Table Rows
         tableBody.innerHTML = proc.pages.map(p => {
             const startRange = (p.page_number * 4096).toString(16).toUpperCase().padStart(4, '0');
             const endRange = ((p.page_number + 1) * 4096 - 1).toString(16).toUpperCase().padStart(4, '0');
@@ -606,7 +605,6 @@ async function loadVMProcessDetails() {
             const dirty = p.is_dirty ? '<span style="color:var(--accent-yellow)">1 (Dirty)</span>' : '0 (Clean)';
             const ref = p.is_referenced ? '1' : '0';
             const swap = p.swap_block !== null ? `Block ${p.swap_block}` : 'None';
-            
             return `
                 <tr style="${p.is_valid ? 'background:rgba(16,185,129,0.04)':''}">
                     <td style="font-family:var(--font-mono);font-weight:700">Page ${p.page_number}</td>
@@ -621,6 +619,9 @@ async function loadVMProcessDetails() {
             `;
         }).join('');
     } catch {}
+
+    // Also refresh RAM/Swap with per-process filter
+    await loadPhysicalLayouts();
 }
 
 async function terminateVMProcess(pid) {
@@ -634,11 +635,121 @@ async function terminateVMProcess(pid) {
 }
 
 async function loadPhysicalLayouts() {
+    const pid = document.getElementById('vm-active-process').value;
+    if (pid) {
+        await loadProcessMemoryMap(pid);
+    } else {
+        await loadGlobalMemoryLayouts();
+    }
+}
+
+async function loadProcessMemoryMap(pid) {
+    try {
+        const mm = await api(`/api/vm/processes/${pid}/memory-map`);
+        const statsBar = document.getElementById('vm-process-stats-bar');
+        const s = mm.summary;
+
+        // Stats bar
+        statsBar.style.display = 'block';
+        statsBar.innerHTML = `
+            <div class="card" style="padding:14px 20px; background:linear-gradient(135deg, rgba(6,182,212,0.08), rgba(139,92,246,0.08)); border:1px solid rgba(6,182,212,0.25);">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                    <span style="font-size:1.1rem;font-weight:700;color:var(--accent-cyan);">${mm.process_name}</span>
+                    <span class="badge badge-success">PID ${mm.pid}</span>
+                    <span class="badge badge-${mm.privilege_ring===0?'danger':'running'}">Ring ${mm.privilege_ring}</span>
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:16px;font-size:0.85rem;">
+                    <div><span style="color:var(--text-muted)">Pages in RAM:</span> <strong style="color:var(--accent-green)">${s.pages_in_ram}</strong></div>
+                    <div><span style="color:var(--text-muted)">Pages in Swap:</span> <strong style="color:var(--accent-yellow)">${s.pages_in_swap}</strong></div>
+                    <div><span style="color:var(--text-muted)">Dirty Pages:</span> <strong style="color:var(--accent-red)">${s.dirty_pages}</strong></div>
+                    <div><span style="color:var(--text-muted)">Total Accessed:</span> <strong>${s.pages_accessed}</strong></div>
+                    <div style="margin-left:auto;"><span style="color:var(--text-muted)">Global RAM:</span> <strong>${mm.global_ram.used_frames}/${mm.global_ram.total_frames}</strong> frames used</div>
+                    <div><span style="color:var(--text-muted)">Global Swap:</span> <strong>${mm.global_swap.used_blocks}/${mm.global_swap.total_blocks}</strong> blocks used</div>
+                </div>
+            </div>
+        `;
+
+        // RAM title
+        document.getElementById('ram-card-title').textContent = `RAM Frames — ${mm.process_name} (PID ${mm.pid})`;
+        document.getElementById('ram-card-badge').textContent = `${s.pages_in_ram} of 8 frames owned`;
+
+        // RAM grid — per-process view
+        const ramGrid = document.getElementById('ram-grid');
+        ramGrid.innerHTML = mm.frames.map(f => {
+            if (f.owner === 'self') {
+                return `
+                    <div class="ram-frame occupied" style="border-left:4px solid var(--accent-cyan);">
+                        <div class="ram-frame-title">
+                            <span style="color:var(--accent-cyan);font-weight:700;">Frame ${f.frame_number} — Page ${f.page_number}</span>
+                            <span>${f.is_dirty ? '<span style="color:var(--accent-yellow);font-weight:700">DIRTY</span>' : '<span style="color:var(--accent-green)">CLEAN</span>'}${f.is_referenced ? ' <span style="color:var(--accent-purple);font-size:0.75rem">REF</span>':''}</span>
+                        </div>
+                        <div style="font-size:0.85rem;font-weight:600;color:var(--accent-green);">
+                            This Process — Page ${f.page_number} [IN RAM]
+                        </div>
+                        <div class="ram-frame-content">
+                            Content: "${f.content || ''}"
+                        </div>
+                    </div>
+                `;
+            } else if (f.owner === 'other') {
+                return `
+                    <div class="ram-frame" style="opacity:0.45; border-left:4px solid var(--border);">
+                        <div class="ram-frame-title">
+                            <span>Frame ${f.frame_number}</span>
+                        </div>
+                        <div style="font-size:0.85rem;color:var(--text-muted);">
+                            Occupied by ${f.process_name} (PID ${f.pid}) — Page ${f.page_number}
+                        </div>
+                        <div class="ram-frame-content" style="color:var(--text-muted)">
+                            [Other process data]
+                        </div>
+                    </div>
+                `;
+            } else {
+                return `
+                    <div class="ram-frame" style="opacity:0.3; border-left:4px solid transparent;">
+                        <div class="ram-frame-title"><span>Frame ${f.frame_number}</span></div>
+                        <div style="font-size:0.85rem;color:var(--text-muted)">FREE FRAME</div>
+                        <div class="ram-frame-content" style="color:var(--text-muted)">—</div>
+                    </div>
+                `;
+            }
+        }).join('');
+
+        // Swap title
+        document.getElementById('swap-card-title').textContent = `Swap Space — ${mm.process_name} (PID ${mm.pid})`;
+        document.getElementById('swap-card-badge').textContent = `${s.pages_in_swap} pages swapped to disk`;
+
+        // Swap grid — per-process only
+        const swapGrid = document.getElementById('swap-grid');
+        if (mm.swap_entries.length === 0) {
+            swapGrid.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted);grid-column:1/-1;">No pages swapped to disk for this process. All accessed pages are in RAM or unloaded.</div>';
+        } else {
+            swapGrid.innerHTML = mm.swap_entries.map(sw => `
+                <div class="swap-block occupied" title="Page ${sw.page_number} — ${sw.content}" style="cursor:pointer;">
+                    <span style="font-size:0.65rem;opacity:0.8;">Swap Block ${sw.swap_block}</span>
+                    <span style="font-weight:700;font-size:0.85rem;color:#fff;">Page ${sw.page_number}</span>
+                    <span style="font-size:0.6rem;opacity:0.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;">${sw.content}</span>
+                </div>
+            `).join('');
+        }
+    } catch(e) {
+        console.error('Memory map load error:', e);
+    }
+}
+
+async function loadGlobalMemoryLayouts() {
+    // Hide stats bar, reset titles
+    document.getElementById('vm-process-stats-bar').style.display = 'none';
+    document.getElementById('ram-card-title').textContent = 'Physical RAM Layout (32KB Shared RAM)';
+    document.getElementById('ram-card-badge').textContent = '8 Frames (4KB each)';
+    document.getElementById('swap-card-title').textContent = 'Virtual Disk Swap Space (Swapped out pages)';
+    document.getElementById('swap-card-badge').textContent = '32 Swap Blocks (4KB each)';
+
     try {
         const ram = await api('/api/vm/ram');
         const swap = await api('/api/vm/swap');
 
-        // Render RAM
         const ramGrid = document.getElementById('ram-grid');
         ramGrid.innerHTML = ram.map(f => {
             const occupied = f.process_name !== null;
@@ -658,7 +769,6 @@ async function loadPhysicalLayouts() {
             `;
         }).join('');
 
-        // Render Swap blocks (32)
         const swapGrid = document.getElementById('swap-grid');
         swapGrid.innerHTML = swap.map(s => {
             const occupied = s.process_name !== null;
@@ -684,23 +794,13 @@ async function simulateVMAccess() {
     const op = document.getElementById('vm-op').value;
     const val = document.getElementById('vm-write-value').value;
 
-    if (!pid) {
-        showToast('Please select a process first', 'error');
-        return;
-    }
-    if (!addressStr) {
-        showToast('Please enter a virtual address (e.g. 0x00A0)', 'error');
-        return;
-    }
+    if (!pid) { showToast('Please select a process first', 'error'); return; }
+    if (!addressStr) { showToast('Please enter a virtual address (e.g. 0x00A0)', 'error'); return; }
 
     let address = parseInt(addressStr);
-    if (addressStr.toLowerCase().startsWith('0x')) {
-        address = parseInt(addressStr, 16);
-    }
-
+    if (addressStr.toLowerCase().startsWith('0x')) address = parseInt(addressStr, 16);
     if (isNaN(address) || address < 0 || address > 65535) {
-        showToast('Address must be between 0x0000 and 0xFFFF (64KB space)', 'error');
-        return;
+        showToast('Address must be between 0x0000 and 0xFFFF (64KB space)', 'error'); return;
     }
 
     const btn = document.getElementById('btn-vm-access');
@@ -708,49 +808,29 @@ async function simulateVMAccess() {
     btn.textContent = 'Simulating hardware memory trap...';
 
     try {
-        const payload = {
-            process_id: parseInt(pid),
-            address: address,
-            operation: op,
-            data: op === 'write' ? val : null
-        };
-
+        const payload = { process_id: parseInt(pid), address, operation: op, data: op === 'write' ? val : null };
         const res = await api('/api/vm/access', { method: 'POST', body: JSON.stringify(payload) });
-        
-        // Render step by step execution log
+
         const logsDiv = document.getElementById('vm-logs');
         logsDiv.innerHTML = '';
-        
         res.logs.forEach((log, index) => {
             const entry = document.createElement('div');
             entry.className = 'vm-log-entry';
-            
             const isKernel = log.ring === 0;
-            const ringText = isKernel ? 'RING 0' : 'RING 3';
-            const ringClass = isKernel ? 'vm-log-ring-kernel' : 'vm-log-ring-user';
-            
             entry.innerHTML = `
                 <span class="vm-log-step">[#${index + 1}]</span>
-                <span class="${ringClass}">[${ringText}]</span>
+                <span class="${isKernel ? 'vm-log-ring-kernel' : 'vm-log-ring-user'}">[${isKernel ? 'RING 0' : 'RING 3'}]</span>
                 <span class="vm-log-desc">${log.message}</span>
             `;
             logsDiv.appendChild(entry);
         });
-        
-        // Scroll logs to bottom
         logsDiv.scrollTop = logsDiv.scrollHeight;
 
-        if (res.success) {
-            showToast(`Access completed! Result: ${res.data_read || 'Success'}`, 'success');
-        } else {
-            showToast(res.error || 'Access failed', 'error');
-        }
+        if (res.success) showToast(`Access completed! Result: ${res.data_read || 'Success'}`, 'success');
+        else showToast(res.error || 'Access failed', 'error');
 
-        // Refresh layouts
         await loadVMProcessDetails();
-        await loadPhysicalLayouts();
     } catch {
-        // Handled by API helper toast
     } finally {
         btn.disabled = false;
         btn.textContent = 'Execute Memory Access';

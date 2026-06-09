@@ -336,12 +336,17 @@
                     </div>
                 </div>
 
+                <!-- Process Memory Stats Summary -->
+                <div id="vm-process-stats-bar" style="display:none; margin-bottom:20px;">
+                    <!-- Filled by JS when a process is selected -->
+                </div>
+
                 <!-- Physical Memory RAM & Swap Space Grid -->
                 <div class="grid-2">
                     <div class="card">
                         <div class="card-header">
-                            <span class="card-title">Physical RAM Layout (32KB Shared RAM)</span>
-                            <span class="badge badge-success">8 Frames (4KB each)</span>
+                            <span class="card-title" id="ram-card-title">Physical RAM Layout (32KB Shared RAM)</span>
+                            <span class="badge badge-success" id="ram-card-badge">8 Frames (4KB each)</span>
                         </div>
                         <div class="ram-grid-container" id="ram-grid">
                             <!-- Filled dynamically by JS -->
@@ -350,8 +355,8 @@
 
                     <div class="card">
                         <div class="card-header">
-                            <span class="card-title">Virtual Disk Swap Space (Swapped out pages)</span>
-                            <span class="badge badge-pending">32 Swap Blocks (4KB each)</span>
+                            <span class="card-title" id="swap-card-title">Virtual Disk Swap Space (Swapped out pages)</span>
+                            <span class="badge badge-pending" id="swap-card-badge">32 Swap Blocks (4KB each)</span>
                         </div>
                         <div class="swap-grid" id="swap-grid">
                             <!-- 32 blocks filled by JS -->

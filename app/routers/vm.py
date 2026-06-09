@@ -57,3 +57,13 @@ def access_memory_endpoint(data: VMMemoryAccessRequest, db: Session = Depends(ge
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error"))
     return result
+
+
+@router.get("/processes/{pid}/memory-map")
+def get_process_memory_map_endpoint(pid: int, db: Session = Depends(get_db)):
+    """Get per-process memory map: frames owned, pages swapped, global state."""
+    result = vm_service.get_process_memory_map(db, pid)
+    if not result:
+        raise HTTPException(status_code=404, detail="Process not found")
+    return result
+
