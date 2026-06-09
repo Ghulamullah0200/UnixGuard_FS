@@ -18,119 +18,25 @@ SWAP_BLOCKS = 32
 
 
 # ──────────────────────────────────────────────────────────────
-# Helper: create a VM process + 16 blank pages (same as vm_service.create_process)
+# Helper: create a VM process using vm_service
 # ──────────────────────────────────────────────────────────────
+from app.services import vm_service
+
 def _create_process(db, name, privilege_ring=3):
-    proc = VirtualMemoryProcess(name=name, state="READY", privilege_ring=privilege_ring)
-    db.add(proc)
-    db.flush()  # get proc.id without full commit
-
-    pages = []
-    for p_num in range(VIRTUAL_PAGES):
-        page = VirtualPage(
-            process_id=proc.id,
-            page_number=p_num,
-            frame_number=None,
-            is_valid=False,
-            is_dirty=False,
-            is_referenced=False,
-            swap_block=None,
-            allocated_content=None,
-        )
-        db.add(page)
-        pages.append(page)
-
-    db.flush()
-    return proc, pages
+    proc = vm_service.create_process(db, name)
+    if privilege_ring != 3:
+        proc.privilege_ring = privilege_ring
+        db.flush()
+    return proc, proc.pages
 
 
 # ──────────────────────────────────────────────────────────────
-# Helper: simulate a memory access (simplified inline version)
-# Returns the log description for display purposes
+# Helper: simulate a memory access using vm_service
 # ──────────────────────────────────────────────────────────────
 def _simulate_access(db, proc, pages, address, operation, data=None):
-    """Lightweight in-seed memory access that mirrors vm_service.access_memory logic."""
-    page_num = address // PAGE_SIZE
-    if page_num >= VIRTUAL_PAGES:
-        return
+    """Call vm_service.access_memory to record accesses."""
+    vm_service.access_memory(db, proc.id, address, operation, data)
 
-    page = pages[page_num]
-
-    if page.is_valid:
-        # Page Hit
-        page.is_referenced = True
-        if operation == "write":
-            page.is_dirty = True
-            page.allocated_content = data or ""
-        return
-
-    # ── Page Fault — find a free frame or evict ──────────────
-    # Collect all currently occupied frames across ALL processes
-    all_valid = db.query(VirtualPage).filter(VirtualPage.is_valid == True).all()
-    occupied = {p.frame_number for p in all_valid if p.frame_number is not None}
-    free_frames = [f for f in range(PHYSICAL_FRAMES) if f not in occupied]
-
-    target_frame = None
-
-    if free_frames:
-        target_frame = free_frames[0]
-    else:
-        # Clock (Second-Chance) replacement
-        frame_map = {p.frame_number: p for p in all_valid if p.frame_number is not None}
-        victim = None
-        sweeps = 0
-        cursor = 0
-        while victim is None and sweeps < 2:
-            candidate = frame_map.get(cursor)
-            if candidate:
-                if candidate.is_referenced:
-                    candidate.is_referenced = False
-                else:
-                    victim = candidate
-                    target_frame = cursor
-                    break
-            cursor += 1
-            if cursor >= PHYSICAL_FRAMES:
-                cursor = 0
-                sweeps += 1
-
-        if victim is None:
-            # Fallback
-            victim = all_valid[0]
-            target_frame = victim.frame_number
-
-        # Evict victim
-        if victim.is_dirty:
-            # Find a free swap block
-            used_swaps = {p.swap_block for p in db.query(VirtualPage).filter(
-                VirtualPage.swap_block.isnot(None)).all()}
-            free_swaps = [sb for sb in range(SWAP_BLOCKS) if sb not in used_swaps]
-            if free_swaps:
-                victim.swap_block = free_swaps[0]
-            victim.is_valid = False
-            victim.frame_number = None
-            victim.is_dirty = False
-            victim.is_referenced = False
-        else:
-            victim.is_valid = False
-            victim.frame_number = None
-            victim.is_referenced = False
-
-    # Page-in the requested page
-    if page.swap_block is not None:
-        page.swap_block = None  # free the swap block
-
-    page.frame_number = target_frame
-    page.is_valid = True
-    page.is_referenced = True
-
-    if operation == "write":
-        page.is_dirty = True
-        page.allocated_content = data or ""
-    else:
-        page.is_dirty = False
-
-    db.flush()
 
 
 # ──────────────────────────────────────────────────────────────

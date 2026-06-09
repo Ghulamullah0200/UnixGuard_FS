@@ -6,12 +6,13 @@ and 32 swap blocks on disk.
 
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
-from app.models import VirtualMemoryProcess, VirtualPage
+from app.models import VirtualMemoryProcess, VirtualPage, PageFrame
 
 PAGE_SIZE = 4096      # 4KB
 VIRTUAL_PAGES = 16    # 16 pages * 4KB = 64KB address space
 PHYSICAL_FRAMES = 8   # 8 frames * 4KB = 32KB RAM
 SWAP_BLOCKS = 32      # 32 swap blocks on disk
+
 
 
 def get_all_processes(db: Session) -> List[VirtualMemoryProcess]:
@@ -58,49 +59,19 @@ def delete_process(db: Session, pid: int) -> bool:
 
 
 def get_ram_layout(db: Session) -> List[dict]:
-    """Retrieve the physical memory frame status (Frame 0 to 7)."""
-    frames = [{"frame_number": i, "pid": None, "process_id": None, "process_name": None, "page_number": None, "content": None, "is_dirty": False} for i in range(PHYSICAL_FRAMES)]
-
-    # Query all valid pages across all processes
-    valid_pages = db.query(VirtualPage).filter(VirtualPage.is_valid == True).all()
-    for page in valid_pages:
-        proc = db.query(VirtualMemoryProcess).get(page.process_id)
-        if page.frame_number is not None and page.frame_number < PHYSICAL_FRAMES:
-            frames[page.frame_number] = {
-                "frame_number": page.frame_number,
-                "pid": page.process_id,
-                "process_id": page.process_id,
-                "process_name": proc.name if proc else "Unknown",
-                "page_number": page.page_number,
-                "content": page.allocated_content or "[empty]",
-                "is_dirty": page.is_dirty,
-            }
-    return frames
+    """Retrieve the physical memory frame status (Frame 0 to 7) - returns empty slots by default when no process/page is selected."""
+    return [{"frame_number": i, "pid": None, "process_id": None, "process_name": None, "page_number": None, "content": None, "is_dirty": False} for i in range(PHYSICAL_FRAMES)]
 
 
 def get_swap_layout(db: Session) -> List[dict]:
-    """Retrieve the swap space block status on disk."""
-    swap = [{"block_number": i, "pid": None, "process_id": None, "process_name": None, "page_number": None} for i in range(SWAP_BLOCKS)]
-
-    swapped_pages = db.query(VirtualPage).filter(VirtualPage.swap_block.isnot(None)).all()
-    for page in swapped_pages:
-        proc = db.query(VirtualMemoryProcess).get(page.process_id)
-        if page.swap_block is not None and page.swap_block < SWAP_BLOCKS:
-            swap[page.swap_block] = {
-                "block_number": page.swap_block,
-                "pid": page.process_id,
-                "process_id": page.process_id,
-                "process_name": proc.name if proc else "Unknown",
-                "page_number": page.page_number,
-            }
-    return swap
+    """Retrieve the swap space block status on disk - returns empty slots by default when no process/page is selected."""
+    return [{"block_number": i, "pid": None, "process_id": None, "process_name": None, "page_number": None} for i in range(SWAP_BLOCKS)]
 
 
 def access_memory(db: Session, pid: int, address: int, operation: str, data: Optional[str] = None) -> dict:
     """
     Simulate a memory access (read/write) for a specific virtual address.
-    Triggers demand paging and the Page Fault Handler if page is invalid.
-    Uses the Clock Replacement Algorithm.
+    Triggers per-page frame allocation and FIFO swapping.
     """
     proc = db.query(VirtualMemoryProcess).get(pid)
     if not proc:
@@ -120,242 +91,237 @@ def access_memory(db: Session, pid: int, address: int, operation: str, data: Opt
 
     logs = []
     step = 1
-    is_fault = False
 
     def add_log(desc: str, ring: str = "User"):
         nonlocal step
-        logs.append({"step": step, "description": desc, "ring": ring})
+        logs.append({"step": step, "message": desc, "ring": 0 if ring == "Kernel" else 3})
         step += 1
 
     # Access starts in Ring 3 (User privilege)
     add_log(f"Process '{proc.name}' (PID {pid}) requested {operation.upper()} at virtual address 0x{address:04X} (Page {page_num}).", "User")
 
-    if page.is_valid:
-        # Page Hit!
-        frame = page.frame_number
-        add_log(f"Page Hit! Page {page_num} is already loaded in Physical Frame {frame}.", "User")
-        page.is_referenced = True
+    from sqlalchemy import func
+    max_order = db.query(func.max(PageFrame.entry_order)).filter(
+        PageFrame.process_id == pid,
+        PageFrame.page_number == page_num
+    ).scalar() or 0
+
+    ram_frames = db.query(PageFrame).filter(
+        PageFrame.process_id == pid,
+        PageFrame.page_number == page_num,
+        PageFrame.is_swapped == False
+    ).order_by(PageFrame.entry_order).all()
+
+    # Step 1: Check if there's space in the 8 frames of this specific page
+    if len(ram_frames) < 8:
+        occupied_slots = {f.frame_slot for f in ram_frames}
+        free_slots = set(range(8)) - occupied_slots
+        target_slot = min(free_slots)
+
+        add_log(f"Page {page_num} frames are not full ({len(ram_frames)}/8 used). Found free Frame Slot {target_slot}.", "Kernel")
+        
+        new_frame = PageFrame(
+            process_id=pid,
+            page_number=page_num,
+            frame_slot=target_slot,
+            content=data if operation == "write" else f"Read Op ({hex(address)})",
+            operation=operation,
+            entry_order=max_order + 1,
+            is_swapped=False,
+            swap_block=None
+        )
+        db.add(new_frame)
+        
+        # Update VirtualPage record for page table stats
+        page.is_valid = True
+        page.frame_number = target_slot
+        page.allocated_content = data if operation == "write" else (page.allocated_content or "")
         if operation == "write":
             page.is_dirty = True
-            page.allocated_content = data or ""
-            add_log(f"Write successful. Frame {frame} updated with content: '{page.allocated_content}'. Page marked DIRTY.", "User")
-        else:
-            add_log(f"Read successful. Value in Frame {frame}: '{page.allocated_content or '[empty]'}'", "User")
-
+        page.is_referenced = True
+        
         db.commit()
+        
+        add_log(f"Loaded {operation.upper()} command into Frame Slot {target_slot} of Page {page_num}.", "Kernel")
+        add_log(f"Returning from Ring 0 to Ring 3. Memory operation completed.", "User")
+        
         return {
             "success": True,
             "address": address,
             "page_number": page_num,
-            "frame_number": frame,
+            "frame_number": target_slot,
             "is_page_fault": False,
             "logs": logs,
             "value": page.allocated_content
         }
 
-    # Page Fault! Trap to Ring 0 (Kernel mode)
-    is_fault = True
-    add_log(f"PAGE FAULT! Page {page_num} is not present in RAM (Valid bit = 0).", "User")
-    add_log(f"TRAP: Generating interrupt. Transitioning from Ring 3 (User) to Ring 0 (Kernel Mode).", "Kernel")
+    # Step 2: Frames are full! Page Fault & Swap Triggered!
+    # Transition to Ring 0 (Kernel)
+    add_log(f"PAGE FAULT! All 8 frames for Page {page_num} are full.", "User")
+    add_log(f"TRAP: Transitioning from Ring 3 (User) to Ring 0 (Kernel Mode).", "Kernel")
+    add_log(f"Running FIFO Page Replacement on Page {page_num}'s frames...", "Kernel")
 
-    # Step 1: Find a free physical frame
-    # A frame is free if no active valid page maps to it
-    allocated_frames = {p.frame_number for p in db.query(VirtualPage).filter(VirtualPage.is_valid == True).all()}
-    free_frames = [f for f in range(PHYSICAL_FRAMES) if f not in allocated_frames]
+    # The oldest frame in RAM for this page is ram_frames[0]
+    victim = ram_frames[0]
+    add_log(f"Victim selected: Frame Slot {victim.frame_slot} (Content: '{victim.content}') because it is at the TOP (oldest) of the FIFO queue.", "Kernel")
 
-    target_frame = None
-    if free_frames:
-        target_frame = free_frames[0]
-        add_log(f"Found free Physical Frame {target_frame} in RAM.", "Kernel")
-    else:
-        # RAM is full, must run Page Replacement Algorithm (Clock)
-        add_log("RAM is full. Running Page Replacement Algorithm (Clock / Second-Chance)...", "Kernel")
+    # Find a free swap block
+    used_swap_blocks = {f.swap_block for f in db.query(PageFrame).filter(PageFrame.swap_block.isnot(None)).all()}
+    free_swap_blocks = [b for b in range(32) if b not in used_swap_blocks]
 
-        # Get all currently valid pages in RAM, ordered by frame_number
-        valid_pages_in_ram = {
-            p.frame_number: p for p in db.query(VirtualPage).filter(VirtualPage.is_valid == True).all()
-        }
-
-        # Simulated Clock scan starting at Frame 0
-        victim_page = None
-        # We perform up to two full sweeps of frames to guarantee we find a page with reference bit 0
-        # since we clear it in the first sweep.
-        sweeps = 0
-        current_frame_check = 0
-
-        while victim_page is None and sweeps < 2:
-            candidate_page = valid_pages_in_ram.get(current_frame_check)
-            if candidate_page:
-                if candidate_page.is_referenced:
-                    add_log(f"Clock Hand at Frame {current_frame_check} (Page {candidate_page.page_number} of PID {candidate_page.process_id}): Referenced bit is 1. Clearing it and passing.", "Kernel")
-                    candidate_page.is_referenced = False
-                    db.commit()
-                else:
-                    add_log(f"Clock Hand at Frame {current_frame_check} (Page {candidate_page.page_number} of PID {candidate_page.process_id}): Referenced bit is 0. Selected as victim!", "Kernel")
-                    victim_page = candidate_page
-                    target_frame = current_frame_check
-                    break
-
-            current_frame_check += 1
-            if current_frame_check >= PHYSICAL_FRAMES:
-                current_frame_check = 0
-                sweeps += 1
-
-        # Fallback if no victim selected (should not happen)
-        if not victim_page:
-            victim_page = db.query(VirtualPage).filter(VirtualPage.is_valid == True).first()
-            target_frame = victim_page.frame_number
-            add_log(f"Fallback: Evicting Page {victim_page.page_number} of PID {victim_page.process_id} from Frame {target_frame}.", "Kernel")
-
-        # Evict victim_page
-        victim_proc = db.query(VirtualMemoryProcess).get(victim_page.process_id)
-        victim_proc_name = victim_proc.name if victim_proc else "Unknown"
-
-        if victim_page.is_dirty:
-            # Dirty victim: must page out to swap space on disk
-            # Find a free swap block
-            allocated_swap_blocks = {p.swap_block for p in db.query(VirtualPage).filter(VirtualPage.swap_block.isnot(None)).all()}
-            free_swap_blocks = [sb for sb in range(SWAP_BLOCKS) if sb not in allocated_swap_blocks]
-
-            if not free_swap_blocks:
-                add_log("CRITICAL ERROR: Out of Swap Space on Disk! Page replacement failed.", "Kernel")
-                add_log("Kernel panics. Returning failure.", "Kernel")
-                return {"success": False, "error": "Kernel Panic: Out of Swap Space"}
-
-            allocated_swap = free_swap_blocks[0]
-            add_log(f"Victim page {victim_page.page_number} of process '{victim_proc_name}' (PID {victim_page.process_id}) is DIRTY. Paging out to Swap Block {allocated_swap} on Disk.", "Kernel")
-
-            victim_page.swap_block = allocated_swap
-            victim_page.is_valid = False
-            victim_page.frame_number = None
-            victim_page.is_dirty = False
-            victim_page.is_referenced = False
+    if not free_swap_blocks:
+        oldest_swap = db.query(PageFrame).filter(PageFrame.swap_block.isnot(None)).order_by(PageFrame.entry_order).first()
+        if oldest_swap:
+            target_swap_block = oldest_swap.swap_block
+            db.delete(oldest_swap)
             db.commit()
+            add_log(f"Disk Swap is full! Evicting oldest swapped block {target_swap_block} to make space.", "Kernel")
         else:
-            # Clean victim: just evict
-            add_log(f"Victim page {victim_page.page_number} of process '{victim_proc_name}' (PID {victim_page.process_id}) is CLEAN. Evicting from RAM without swap write.", "Kernel")
-            victim_page.is_valid = False
-            victim_page.frame_number = None
-            victim_page.is_referenced = False
-            db.commit()
-
-    # Step 3: Page in the requested page
-    if page.swap_block is not None:
-        add_log(f"Requested page {page_num} was swapped out. Reading from Swap Block {page.swap_block} into Frame {target_frame}.", "Kernel")
-        page.swap_block = None  # freed swap block
+            add_log("CRITICAL ERROR: Out of Swap Space on Disk!", "Kernel")
+            return {"success": False, "error": "Kernel Panic: Out of Swap Space"}
     else:
-        add_log(f"Requested page {page_num} is clean/new. Allocating and initializing zero-filled page in Frame {target_frame}.", "Kernel")
+        target_swap_block = free_swap_blocks[0]
 
-    # Step 4: Map requested page to frame
-    page.frame_number = target_frame
+    add_log(f"Paging out data from Frame Slot {victim.frame_slot} to Disk Swap Block {target_swap_block}.", "Kernel")
+
+    # Move victim to swap
+    victim.is_swapped = True
+    victim.swap_block = target_swap_block
+    
+    # Load new command/data into the freed Frame Slot
+    new_frame = PageFrame(
+        process_id=pid,
+        page_number=page_num,
+        frame_slot=victim.frame_slot,
+        content=data if operation == "write" else f"Read Op ({hex(address)})",
+        operation=operation,
+        entry_order=max_order + 1,
+        is_swapped=False,
+        swap_block=None
+    )
+    db.add(new_frame)
+
+    # Update VirtualPage record
     page.is_valid = True
-    page.is_referenced = True
-
+    page.frame_number = victim.frame_slot
+    page.allocated_content = data if operation == "write" else (page.allocated_content or "")
     if operation == "write":
         page.is_dirty = True
-        page.allocated_content = data or ""
-        add_log(f"Write completed: Frame {target_frame} initialized with content: '{data}'. Page marked DIRTY.", "Kernel")
-    else:
-        page.is_dirty = False
-        add_log(f"Read completed: Page mapped into Frame {target_frame}.", "Kernel")
+    page.is_referenced = True
 
     db.commit()
 
-    # Returning to Ring 3 (User privilege)
-    add_log(f"Interrupt handled. Returning from Ring 0 (Kernel) to Ring 3 (User mode). Memory operation completed.", "User")
+    add_log(f"Swapped out victim to Block {target_swap_block}. Loaded new command into Page {page_num} Frame Slot {victim.frame_slot}.", "Kernel")
+    add_log(f"Returning from Ring 0 to Ring 3. Memory operation completed.", "User")
 
     return {
         "success": True,
         "address": address,
         "page_number": page_num,
-        "frame_number": target_frame,
-        "is_page_fault": is_fault,
+        "frame_number": victim.frame_slot,
+        "is_page_fault": True,
         "logs": logs,
         "value": page.allocated_content
     }
 
 
-def get_process_memory_map(db: Session, pid: int) -> Optional[dict]:
-    """Get per-process memory map: which frames this process owns,
-    which pages are swapped, and the global occupancy state."""
+def get_process_memory_map(db: Session, pid: int, page_num: int = 0) -> Optional[dict]:
+    """Get per-process, per-page memory map: which frame slots are occupied
+    for this specific page, which are swapped, and summary details."""
     proc = db.query(VirtualMemoryProcess).get(pid)
     if not proc:
         return None
 
-    # This process's pages
     pages = db.query(VirtualPage).filter(
         VirtualPage.process_id == pid
     ).order_by(VirtualPage.page_number).all()
 
-    # Global frame occupancy (all processes)
-    all_valid_pages = db.query(VirtualPage).filter(VirtualPage.is_valid == True).all()
+    ram_frames = db.query(PageFrame).filter(
+        PageFrame.process_id == pid,
+        PageFrame.page_number == page_num,
+        PageFrame.is_swapped == False
+    ).all()
+    
+    ram_map = {f.frame_slot: f for f in ram_frames}
 
-    # Build 8-frame layout from this process's perspective
     frames = []
-    for frame_idx in range(PHYSICAL_FRAMES):
-        frame_info = {
-            "frame_number": frame_idx,
-            "owner": None,
-            "pid": None,
-            "process_name": None,
-            "page_number": None,
-            "content": None,
-            "is_dirty": False,
-            "is_referenced": False,
-        }
-        occupant = next((vp for vp in all_valid_pages if vp.frame_number == frame_idx), None)
-        if occupant:
-            occ_proc = db.query(VirtualMemoryProcess).get(occupant.process_id)
-            frame_info["pid"] = occupant.process_id
-            frame_info["process_name"] = occ_proc.name if occ_proc else "Unknown"
-            frame_info["page_number"] = occupant.page_number
-            frame_info["content"] = occupant.allocated_content or "[empty]"
-            frame_info["is_dirty"] = occupant.is_dirty
-            frame_info["is_referenced"] = occupant.is_referenced
-            frame_info["owner"] = "self" if occupant.process_id == pid else "other"
-        frames.append(frame_info)
-
-    # This process's swapped pages
-    swap_entries = []
-    for p in pages:
-        if p.swap_block is not None:
-            swap_entries.append({
-                "swap_block": p.swap_block,
-                "page_number": p.page_number,
-                "content": p.allocated_content or "[swapped]",
+    for slot in range(PHYSICAL_FRAMES):
+        f = ram_map.get(slot)
+        if f:
+            frames.append({
+                "frame_number": slot,
+                "owner": "self",
+                "pid": pid,
+                "process_name": proc.name,
+                "page_number": page_num,
+                "content": f.content or "[empty]",
+                "is_dirty": f.operation == "write",
+                "is_referenced": True,
+                "operation": f.operation
             })
-    swap_entries.sort(key=lambda s: s["swap_block"])
+        else:
+            frames.append({
+                "frame_number": slot,
+                "owner": None,
+                "pid": None,
+                "process_name": None,
+                "page_number": None,
+                "content": None,
+                "is_dirty": False,
+                "is_referenced": False,
+                "operation": None
+            })
 
-    pages_in_ram = sum(1 for p in pages if p.is_valid)
-    pages_in_swap = sum(1 for p in pages if p.swap_block is not None)
-    pages_accessed = sum(1 for p in pages if p.allocated_content is not None)
-    dirty_count = sum(1 for p in pages if p.is_dirty)
-    total_used_frames = len({vp.frame_number for vp in all_valid_pages if vp.frame_number is not None})
-    all_swapped = db.query(VirtualPage).filter(VirtualPage.swap_block.isnot(None)).all()
+    swapped_frames = db.query(PageFrame).filter(
+        PageFrame.process_id == pid,
+        PageFrame.page_number == page_num,
+        PageFrame.is_swapped == True
+    ).order_by(PageFrame.swap_block).all()
+
+    swap_entries = []
+    for sf in swapped_frames:
+        swap_entries.append({
+            "swap_block": sf.swap_block,
+            "page_number": page_num,
+            "content": sf.content or "[swapped]",
+            "operation": sf.operation
+        })
+
+    pages_in_ram = len(ram_frames)
+    pages_in_swap = len(swapped_frames)
+    pages_accessed = pages_in_ram + pages_in_swap
+    dirty_pages = sum(1 for f in ram_frames if f.operation == "write") + sum(1 for sf in swapped_frames if sf.operation == "write")
+
+    all_swapped = db.query(PageFrame).filter(PageFrame.swap_block.isnot(None)).all()
     total_used_swap = len({p.swap_block for p in all_swapped})
+
+    all_ram_frames = db.query(PageFrame).filter(PageFrame.is_swapped == False).all()
+    total_used_frames = len(all_ram_frames)
 
     return {
         "pid": proc.id,
         "process_name": proc.name,
         "state": proc.state,
         "privilege_ring": proc.privilege_ring,
+        "selected_page": page_num,
         "summary": {
             "total_pages": len(pages),
             "pages_in_ram": pages_in_ram,
             "pages_in_swap": pages_in_swap,
             "pages_accessed": pages_accessed,
-            "dirty_pages": dirty_count,
+            "dirty_pages": dirty_pages,
         },
         "global_ram": {
             "total_frames": PHYSICAL_FRAMES,
             "used_frames": total_used_frames,
-            "free_frames": PHYSICAL_FRAMES - total_used_frames,
+            "free_frames": max(0, PHYSICAL_FRAMES - total_used_frames),
         },
         "global_swap": {
             "total_blocks": SWAP_BLOCKS,
             "used_blocks": total_used_swap,
-            "free_blocks": SWAP_BLOCKS - total_used_swap,
+            "free_blocks": max(0, SWAP_BLOCKS - total_used_swap),
         },
         "frames": frames,
         "swap_entries": swap_entries,
     }
+

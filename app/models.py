@@ -49,6 +49,7 @@ class VirtualMemoryProcess(Base):
     privilege_ring = Column(Integer, default=3) # Ring 3 (User), Ring 0 (Kernel)
 
     pages = relationship("VirtualPage", back_populates="process", cascade="all, delete-orphan")
+    page_frames = relationship("PageFrame", back_populates="process", cascade="all, delete-orphan")
 
 
 class VirtualPage(Base):
@@ -56,12 +57,30 @@ class VirtualPage(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     process_id = Column(Integer, ForeignKey("virtual_memory_processes.id", ondelete="CASCADE"), nullable=False)
-    page_number = Column(Integer, nullable=False) # 0 to 15 (for 64KB virtual address space with 4KB pages)
-    frame_number = Column(Integer, nullable=True) # 0 to 7 (for 32KB RAM with 8 frames)
-    is_valid = Column(Boolean, default=False)     # True if mapped to physical frame (in RAM)
-    is_dirty = Column(Boolean, default=False)     # True if written to
-    is_referenced = Column(Boolean, default=False)# True if accessed (for Clock algorithm)
-    swap_block = Column(Integer, nullable=True)   # Swap block index (0 to 31) if swapped to disk
-    allocated_content = Column(Text, nullable=True) # Simulated contents in this page
+    page_number = Column(Integer, nullable=False)
+    frame_number = Column(Integer, nullable=True)
+    is_valid = Column(Boolean, default=False)
+    is_dirty = Column(Boolean, default=False)
+    is_referenced = Column(Boolean, default=False)
+    swap_block = Column(Integer, nullable=True)
+    allocated_content = Column(Text, nullable=True)
 
     process = relationship("VirtualMemoryProcess", back_populates="pages")
+
+
+class PageFrame(Base):
+    """Each page (0-15) of a process has up to 8 frame slots.
+    When all 8 are full, FIFO eviction pushes the oldest to swap."""
+    __tablename__ = "page_frames"
+
+    id = Column(Integer, primary_key=True, index=True)
+    process_id = Column(Integer, ForeignKey("virtual_memory_processes.id", ondelete="CASCADE"), nullable=False)
+    page_number = Column(Integer, nullable=False)   # 0-15
+    frame_slot = Column(Integer, nullable=False)     # 0-7
+    content = Column(Text, nullable=True)
+    operation = Column(String(16), nullable=False, default="write")  # read / write
+    entry_order = Column(Integer, nullable=False, default=0)         # for FIFO ordering
+    is_swapped = Column(Boolean, default=False)
+    swap_block = Column(Integer, nullable=True)
+
+    process = relationship("VirtualMemoryProcess", back_populates="page_frames")

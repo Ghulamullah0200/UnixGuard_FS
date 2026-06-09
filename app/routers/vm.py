@@ -2,6 +2,7 @@
 vm.py — API routes for demand-paged Virtual Memory simulation.
 """
 
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -60,9 +61,9 @@ def access_memory_endpoint(data: VMMemoryAccessRequest, db: Session = Depends(ge
 
 
 @router.get("/processes/{pid}/memory-map")
-def get_process_memory_map_endpoint(pid: int, db: Session = Depends(get_db)):
-    """Get per-process memory map: frames owned, pages swapped, global state."""
-    result = vm_service.get_process_memory_map(db, pid)
+def get_process_memory_map_endpoint(pid: int, page_num: Optional[int] = 0, db: Session = Depends(get_db)):
+    """Get per-process, per-page memory map: frames owned, pages swapped, global state."""
+    result = vm_service.get_process_memory_map(db, pid, page_num=page_num)
     if not result:
         raise HTTPException(status_code=404, detail="Process not found")
     return result

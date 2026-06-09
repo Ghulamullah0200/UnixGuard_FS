@@ -535,6 +535,14 @@ async function runScheduler() {
 }
 
 // ═══ VIRTUAL MEMORY SIMULATOR ════════════════════════════
+let currentSelectedPageNum = 0;
+let lastActiveProcessId = null;
+
+function selectVMPage(pageNum) {
+    currentSelectedPageNum = pageNum;
+    loadVMProcessDetails();
+}
+
 async function loadVMWorkspace() {
     await loadVMProcesses();
     await loadPhysicalLayouts();
@@ -585,6 +593,11 @@ async function loadVMProcessDetails() {
         return;
     }
 
+    if (pid !== lastActiveProcessId) {
+        lastActiveProcessId = pid;
+        currentSelectedPageNum = 0;
+    }
+
     try {
         const procs = await api('/api/vm/processes');
         const proc = procs.find(p => p.id == pid);
@@ -605,9 +618,19 @@ async function loadVMProcessDetails() {
             const dirty = p.is_dirty ? '<span style="color:var(--accent-yellow)">1 (Dirty)</span>' : '0 (Clean)';
             const ref = p.is_referenced ? '1' : '0';
             const swap = p.swap_block !== null ? `Block ${p.swap_block}` : 'None';
+            
+            const isSelected = p.page_number === currentSelectedPageNum;
+            const highlightStyle = isSelected 
+                ? 'background:rgba(6,182,212,0.18) !important; border: 1px solid var(--accent-cyan); font-weight: bold; cursor: pointer;' 
+                : 'cursor: pointer;';
+            const validBg = p.is_valid ? 'background:rgba(16,185,129,0.04)' : '';
+            const rowStyle = isSelected ? highlightStyle : (validBg ? validBg + '; cursor: pointer;' : 'cursor: pointer;');
+            
             return `
-                <tr style="${p.is_valid ? 'background:rgba(16,185,129,0.04)':''}">
-                    <td style="font-family:var(--font-mono);font-weight:700">Page ${p.page_number}</td>
+                <tr onclick="selectVMPage(${p.page_number})" style="${rowStyle}">
+                    <td style="font-family:var(--font-mono);font-weight:700">
+                        ${isSelected ? '⚡ ' : ''}Page ${p.page_number}
+                    </td>
                     <td style="font-family:var(--font-mono)">0x${startRange} - 0x${endRange}</td>
                     <td style="font-family:var(--font-mono)">${p.frame_number !== null ? `Frame ${p.frame_number}` : '—'}</td>
                     <td>${valid}</td>
@@ -645,7 +668,7 @@ async function loadPhysicalLayouts() {
 
 async function loadProcessMemoryMap(pid) {
     try {
-        const mm = await api(`/api/vm/processes/${pid}/memory-map`);
+        const mm = await api(`/api/vm/processes/${pid}/memory-map?page_num=${currentSelectedPageNum}`);
         const statsBar = document.getElementById('vm-process-stats-bar');
         const s = mm.summary;
 
@@ -657,21 +680,22 @@ async function loadProcessMemoryMap(pid) {
                     <span style="font-size:1.1rem;font-weight:700;color:var(--accent-cyan);">${mm.process_name}</span>
                     <span class="badge badge-success">PID ${mm.pid}</span>
                     <span class="badge badge-${mm.privilege_ring===0?'danger':'running'}">Ring ${mm.privilege_ring}</span>
+                    <span class="badge badge-purple" style="margin-left:auto;">Viewing Page ${currentSelectedPageNum}</span>
                 </div>
                 <div style="display:flex;flex-wrap:wrap;gap:16px;font-size:0.85rem;">
-                    <div><span style="color:var(--text-muted)">Pages in RAM:</span> <strong style="color:var(--accent-green)">${s.pages_in_ram}</strong></div>
-                    <div><span style="color:var(--text-muted)">Pages in Swap:</span> <strong style="color:var(--accent-yellow)">${s.pages_in_swap}</strong></div>
-                    <div><span style="color:var(--text-muted)">Dirty Pages:</span> <strong style="color:var(--accent-red)">${s.dirty_pages}</strong></div>
+                    <div><span style="color:var(--text-muted)">Frames active for Page ${currentSelectedPageNum}:</span> <strong style="color:var(--accent-green)">${s.pages_in_ram}/8</strong></div>
+                    <div><span style="color:var(--text-muted)">Swap Blocks for Page ${currentSelectedPageNum}:</span> <strong style="color:var(--accent-yellow)">${s.pages_in_swap}</strong></div>
+                    <div><span style="color:var(--text-muted)">Dirty Page Frames:</span> <strong style="color:var(--accent-red)">${s.dirty_pages}</strong></div>
                     <div><span style="color:var(--text-muted)">Total Accessed:</span> <strong>${s.pages_accessed}</strong></div>
-                    <div style="margin-left:auto;"><span style="color:var(--text-muted)">Global RAM:</span> <strong>${mm.global_ram.used_frames}/${mm.global_ram.total_frames}</strong> frames used</div>
-                    <div><span style="color:var(--text-muted)">Global Swap:</span> <strong>${mm.global_swap.used_blocks}/${mm.global_swap.total_blocks}</strong> blocks used</div>
+                    <div style="margin-left:auto;"><span style="color:var(--text-muted)">Global RAM Used:</span> <strong>${mm.global_ram.used_frames}</strong> frames</div>
+                    <div><span style="color:var(--text-muted)">Global Swap Used:</span> <strong>${mm.global_swap.used_blocks}</strong> blocks</div>
                 </div>
             </div>
         `;
 
         // RAM title
-        document.getElementById('ram-card-title').textContent = `RAM Frames — ${mm.process_name} (PID ${mm.pid})`;
-        document.getElementById('ram-card-badge').textContent = `${s.pages_in_ram} of 8 frames owned`;
+        document.getElementById('ram-card-title').textContent = `RAM Frames — Page ${currentSelectedPageNum} of ${mm.process_name} (PID ${mm.pid})`;
+        document.getElementById('ram-card-badge').textContent = `${s.pages_in_ram} of 8 slots filled`;
 
         // RAM grid — per-process view
         const ramGrid = document.getElementById('ram-grid');
@@ -680,36 +704,22 @@ async function loadProcessMemoryMap(pid) {
                 return `
                     <div class="ram-frame occupied" style="border-left:4px solid var(--accent-cyan);">
                         <div class="ram-frame-title">
-                            <span style="color:var(--accent-cyan);font-weight:700;">Frame ${f.frame_number} — Page ${f.page_number}</span>
-                            <span>${f.is_dirty ? '<span style="color:var(--accent-yellow);font-weight:700">DIRTY</span>' : '<span style="color:var(--accent-green)">CLEAN</span>'}${f.is_referenced ? ' <span style="color:var(--accent-purple);font-size:0.75rem">REF</span>':''}</span>
+                            <span style="color:var(--accent-cyan);font-weight:700;">Frame slot ${f.frame_number} — Page ${f.page_number}</span>
+                            <span>${f.is_dirty ? '<span style="color:var(--accent-yellow);font-weight:700">DIRTY</span>' : '<span style="color:var(--accent-green)">CLEAN</span>'}</span>
                         </div>
                         <div style="font-size:0.85rem;font-weight:600;color:var(--accent-green);">
-                            This Process — Page ${f.page_number} [IN RAM]
+                            Active Operation: ${f.operation ? f.operation.toUpperCase() : 'LOADED'}
                         </div>
                         <div class="ram-frame-content">
                             Content: "${f.content || ''}"
                         </div>
                     </div>
                 `;
-            } else if (f.owner === 'other') {
-                return `
-                    <div class="ram-frame" style="opacity:0.45; border-left:4px solid var(--border);">
-                        <div class="ram-frame-title">
-                            <span>Frame ${f.frame_number}</span>
-                        </div>
-                        <div style="font-size:0.85rem;color:var(--text-muted);">
-                            Occupied by ${f.process_name} (PID ${f.pid}) — Page ${f.page_number}
-                        </div>
-                        <div class="ram-frame-content" style="color:var(--text-muted)">
-                            [Other process data]
-                        </div>
-                    </div>
-                `;
             } else {
                 return `
-                    <div class="ram-frame" style="opacity:0.3; border-left:4px solid transparent;">
-                        <div class="ram-frame-title"><span>Frame ${f.frame_number}</span></div>
-                        <div style="font-size:0.85rem;color:var(--text-muted)">FREE FRAME</div>
+                    <div class="ram-frame" style="opacity:0.35; border-left:4px solid transparent;">
+                        <div class="ram-frame-title"><span>Frame slot ${f.frame_number}</span></div>
+                        <div style="font-size:0.85rem;color:var(--text-muted)">FREE SLOT</div>
                         <div class="ram-frame-content" style="color:var(--text-muted)">—</div>
                     </div>
                 `;
@@ -717,16 +727,16 @@ async function loadProcessMemoryMap(pid) {
         }).join('');
 
         // Swap title
-        document.getElementById('swap-card-title').textContent = `Swap Space — ${mm.process_name} (PID ${mm.pid})`;
-        document.getElementById('swap-card-badge').textContent = `${s.pages_in_swap} pages swapped to disk`;
+        document.getElementById('swap-card-title').textContent = `Disk Swap Space — Page ${currentSelectedPageNum} of ${mm.process_name}`;
+        document.getElementById('swap-card-badge').textContent = `${s.pages_in_swap} blocks swapped`;
 
         // Swap grid — per-process only
         const swapGrid = document.getElementById('swap-grid');
         if (mm.swap_entries.length === 0) {
-            swapGrid.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted);grid-column:1/-1;">No pages swapped to disk for this process. All accessed pages are in RAM or unloaded.</div>';
+            swapGrid.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);grid-column:1/-1;">No entries swapped to disk for Page ${currentSelectedPageNum} of this process. All accessed entries are in RAM.</div>`;
         } else {
             swapGrid.innerHTML = mm.swap_entries.map(sw => `
-                <div class="swap-block occupied" title="Page ${sw.page_number} — ${sw.content}" style="cursor:pointer;">
+                <div class="swap-block occupied" title="Page ${sw.page_number} — Block ${sw.swap_block} — Content: ${sw.content}" style="cursor:default;">
                     <span style="font-size:0.65rem;opacity:0.8;">Swap Block ${sw.swap_block}</span>
                     <span style="font-weight:700;font-size:0.85rem;color:#fff;">Page ${sw.page_number}</span>
                     <span style="font-size:0.6rem;opacity:0.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;">${sw.content}</span>
@@ -826,8 +836,13 @@ async function simulateVMAccess() {
         });
         logsDiv.scrollTop = logsDiv.scrollHeight;
 
-        if (res.success) showToast(`Access completed! Result: ${res.data_read || 'Success'}`, 'success');
-        else showToast(res.error || 'Access failed', 'error');
+        if (res.success) {
+            showToast(`Access completed! Value: ${res.value || 'Success'}`, 'success');
+            // Auto-select the page that was accessed
+            currentSelectedPageNum = res.page_number;
+        } else {
+            showToast(res.error || 'Access failed', 'error');
+        }
 
         await loadVMProcessDetails();
     } catch {
