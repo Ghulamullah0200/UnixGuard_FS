@@ -129,8 +129,8 @@ class VMMemoryAccessRequest(BaseModel):
 
 class PageFaultLogEntry(BaseModel):
     step: int
-    description: str
-    ring: str # "Kernel" or "User"
+    message: str
+    ring: int
 
 
 class VMMemoryAccessResponse(BaseModel):
